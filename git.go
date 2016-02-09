@@ -55,7 +55,7 @@ func Clone(url string, path string, branch string) (*git.Repository, error) {
 
 // Checkout creates a new repository in the generated `public` folder and
 // creates a new commit with the generated stuff
-func Checkout(pathToPublic string) {
+func Checkout(pathToPublic string) *git.Repository {
 	repo, err := git.InitRepository(pathToPublic, false)
 	if err != nil {
 		panic(err)
@@ -76,12 +76,12 @@ func Checkout(pathToPublic string) {
 			return nil
 		}
 
-		if strings.HasPrefix(path[len("/tmp/example-blog-8/public/"):], ".git/") {
+		if strings.HasPrefix(path[len(pathToPublic):], ".git/") {
 			return nil
 		}
 
-		fmt.Println(path[len("/tmp/example-blog-8/public/"):])
-		err = idx.AddByPath(path[len("/tmp/example-blog-8/public/"):])
+		fmt.Println(path[len(pathToPublic):])
+		err = idx.AddByPath(path[len(pathToPublic):])
 		if err != nil {
 			panic(err)
 		}
@@ -115,11 +115,12 @@ func Checkout(pathToPublic string) {
 		panic(err)
 	}
 	fmt.Println(commitID)
+	return repo
 }
 
 // Push pushes the `gh-pages` branch to the given url
 func Push(url string, repo *git.Repository) {
-	url = "https://roonyh:2c5cfd400f66d54570ca9a9e44696118eecb4cee@github.com/roonyh/blog.git"
+	url = "https://roonyh:d246caa9228b79ee9b2a7b0fe6b7252b49dfb833@github.com/roonyh/blog.git"
 	remote, err := repo.Remotes.Create("by-hgpages-service", url)
 	if err != nil {
 		panic(err)
