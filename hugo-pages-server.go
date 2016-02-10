@@ -7,28 +7,50 @@ import (
 	"net/http"
 
 	"github.com/google/go-github/github"
+	mgo "gopkg.in/mgo.v2"
+	"gopkg.in/mgo.v2/bson"
 )
 
+var dbSession *mgo.Session
+var users *mgo.Collection
+
+// Repo is a github repo
+type Repo struct {
+	ID          string `bson:"_id,omitempty"`
+	Username    string
+	AccessToken string
+}
+
 func main() {
+	dbSession, err := mgo.Dial("localhost")
+	if err != nil {
+		panic(err)
+	}
+	defer dbSession.Close()
+
+	users = dbSession.DB("ghpages").C("users")
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		payload := validate(r)
 		if payload == nil {
 			return
 		}
 		fmt.Println(*payload.Repo.URL)
+		fullname := *payload.Repo.FullName
 		fmt.Println("/tmp/", *payload.Repo.FullName)
-		url := *payload.Repo.FullName
-		path := "/tmp/" + *payload.Repo.FullName
-		_, err := Clone(*payload.Repo.URL, path, "hg-pages")
+		url := *payload.Repo.URL
+		path := "/tmp/" + fullname
+		_, err := Clone(url, path, "hg-pages")
 		fmt.Println(err)
 
 		if err != nil {
 			return
 		}
 
+		repo := getRepo(fullname)
 		HugoBuild(path)
 		subrepo := Checkout(path + "/public/") // trailing / important
-		Push(url, subrepo)
+		Push(formatPushURL(repo.AccessToken, repo.Username, fullname), subrepo)
 	})
 
 	fmt.Println("listening")
@@ -55,4 +77,20 @@ func validate(r *http.Request) *github.WebHookPayload {
 	}
 
 	return &t
+}
+
+func formatPushURL(accessToken, username, fullname string) string {
+	// TODO: optimize string concat
+	return "https://" + username + ":" + accessToken + "@github.com/" + fullname
+}
+
+func getRepo(fullname string) *Repo {
+	result := &Repo{}
+	err := users.Find(bson.M{"_id": fullname}).One(result)
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+
+	return result
 }

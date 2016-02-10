@@ -10,18 +10,6 @@ import (
 	git "github.com/libgit2/git2go"
 )
 
-func main() {
-	//Clone("https://github.com/roonyh/blog.git", "/tmp/example-blog-8")
-	//	HugoBuild("/tmp/example-blog-2")
-	_, err := git.OpenRepository("/tmp/example-blog-8")
-	if err != nil {
-		panic(err)
-	}
-
-	HugoBuild("/tmp/example-blog-8")
-
-}
-
 // Clone clones a repo and also updates the repos submodules.
 func Clone(url string, path string, branch string) (*git.Repository, error) {
 	co := &git.CloneOptions{
@@ -120,7 +108,6 @@ func Checkout(pathToPublic string) *git.Repository {
 
 // Push pushes the `gh-pages` branch to the given url
 func Push(url string, repo *git.Repository) {
-	url = "https://roonyh:d246caa9228b79ee9b2a7b0fe6b7252b49dfb833@github.com/roonyh/blog.git"
 	remote, err := repo.Remotes.Create("by-hgpages-service", url)
 	if err != nil {
 		panic(err)
