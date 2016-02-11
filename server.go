@@ -16,6 +16,9 @@ var dbSession *mgo.Session
 var users *mgo.Collection
 var repos *mgo.Collection
 
+var specialBranch string
+var specialRef string
+
 // Repo is a github repo
 type Repo struct {
 	ID          string `bson:"_id,omitempty"`
@@ -24,14 +27,20 @@ type Repo struct {
 }
 
 func main() {
-	dbSession, err := mgo.Dial("localhost")
+	config := loadConfig()
+	config.print()
+
+	specialBranch = config.SpecialBranch
+	specialRef = "refs/heads/" + config.SpecialBranch
+
+	dbSession, err := mgo.Dial(config.MongoURL)
 	if err != nil {
 		panic(err)
 	}
 	defer dbSession.Close()
 
-	users = dbSession.DB("ghpages").C("users")
-	repos = dbSession.DB("ghpages").C("repos")
+	users = dbSession.DB("hugo-pages").C("users")
+	repos = dbSession.DB("hugo-pages").C("repos")
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		payload := validate(r)
@@ -45,7 +54,7 @@ func main() {
 		path := "/tmp/" + fullname
 		defer cleanUp(path)
 
-		_, err := Clone(url, path, "hg-pages")
+		_, err := Clone(url, path, config.SpecialBranch)
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -60,11 +69,10 @@ func main() {
 	})
 
 	fmt.Println("listening")
-	log.Fatal(http.ListenAndServe(":8081", nil))
+	log.Fatal(http.ListenAndServe(config.Address, nil))
 }
 
 func validate(r *http.Request) *github.WebHookPayload {
-	fmt.Println("valling")
 	if r.Method != "POST" {
 		log.Println("Not POST")
 		return nil
@@ -77,8 +85,8 @@ func validate(r *http.Request) *github.WebHookPayload {
 		return nil
 	}
 
-	if *t.Ref != "refs/heads/hg-pages" {
-		log.Println("Not hg-pages:", *t.Ref)
+	if *t.Ref != specialRef {
+		log.Println("Not hugo pages:", *t.Ref)
 		return nil
 	}
 
