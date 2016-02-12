@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -21,9 +20,11 @@ var specialRef string
 
 // Repo is a github repo
 type Repo struct {
-	ID          string `bson:"_id,omitempty"`
-	Username    string
-	AccessToken string
+	ID               string `bson:"_id,omitempty"`
+	Username         string
+	AccessToken      string
+	LastBuildOutput  string
+	LastBuildSuccess bool
 }
 
 func main() {
@@ -51,24 +52,37 @@ func main() {
 		fullname := *payload.Repo.FullName
 		url := *payload.Repo.URL
 
+		repo := getRepo(fullname)
+		if repo == nil {
+			log.Printf("repo not known %s", fullname)
+			return
+		}
+
 		path := "/tmp/" + fullname
 		defer cleanUp(path)
 
 		_, err := Clone(url, path, config.SpecialBranch)
 		if err != nil {
-			fmt.Println(err)
+			log.Printf("Could not clone: %s", err)
 			return
 		}
 
-		fmt.Println(fullname)
-		repo := getRepo(fullname)
-		fmt.Println(repo)
 		HugoBuild(path)
-		subrepo := Checkout(path + "/public/") // trailing / important
-		Push(formatPushURL(repo.AccessToken, repo.Username, fullname), subrepo)
+
+		subrepo, err := Checkout(path + "/public/") // trailing / important
+		if err != nil {
+			log.Printf("Could not checkout: %s", err)
+			return
+		}
+
+		err = Push(formatPushURL(repo.AccessToken, repo.Username, fullname), subrepo)
+		if err != nil {
+			log.Printf("Could not push: %s", err)
+			return
+		}
 	})
 
-	fmt.Println("listening")
+	log.Println("Listening")
 	log.Fatal(http.ListenAndServe(config.Address, nil))
 }
 
@@ -102,7 +116,7 @@ func getRepo(fullname string) *Repo {
 	result := &Repo{}
 	err := repos.Find(bson.M{"_id": fullname}).One(result)
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return nil
 	}
 
@@ -112,6 +126,6 @@ func getRepo(fullname string) *Repo {
 func cleanUp(path string) {
 	err := os.RemoveAll(path)
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 	}
 }
