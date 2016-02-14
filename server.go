@@ -70,7 +70,8 @@ func main() {
 		go func() {
 			log.Printf("Got: %s", fullname)
 			workerComm := synchronize(fullname)
-			work(fullname, url, workerComm)
+			w := newWorker(fullname, url, workerComm)
+			w.work()
 		}()
 	})
 
@@ -122,28 +123,37 @@ func _waitAndStart(currentComm *comm, fullname string) {
 	}
 }
 
-func work(fullname, url string, workerComm *comm) {
-	select {
-	case <-workerComm.Stop:
-		log.Println("Asked to stop: Stopping before clonning")
-		workerComm.Stopped <- false
-		return
-	default:
-		log.Printf("Going to clone %s", fullname)
-	}
+type worker struct {
+	stop     chan bool
+	stopped  chan bool
+	fullname string
+	url      string
+}
 
-	repo := getRepo(fullname)
+func newWorker(fullname, url string, workerComm *comm) *worker {
+	return &worker{
+		stop:     workerComm.Stop,
+		stopped:  workerComm.Stopped,
+		fullname: fullname,
+		url:      url,
+	}
+}
+
+func (w *worker) work() {
+	w.checkAndContinue("starting processing")
+
+	repo := getRepo(w.fullname)
 	if repo == nil {
-		log.Printf("Repo not known %s", fullname)
+		w.checkAndStop("repo not known")
 		return
 	}
 
-	path := "/tmp/" + fullname
+	path := "/tmp/" + w.fullname
 	defer cleanUp(path)
 
-	_, err := Clone(url, path, specialBranch)
+	_, err := Clone(w.url, path, specialBranch)
 	if err != nil {
-		log.Printf("Could not clone: %s", err)
+		w.checkAndStop("could not clone")
 		return
 	}
 
@@ -151,41 +161,45 @@ func work(fullname, url string, workerComm *comm) {
 
 	subrepo, err := Checkout(path + "/public/") // trailing / important
 	if err != nil {
-		log.Printf("Could not checkout: %s", err)
+		w.checkAndStop("Could not checkout: " + err.Error())
 		return
 	}
 
-	select {
-	case <-workerComm.Stop:
-		log.Println("Asked to stop: Stopping before pushing")
-		cleanUp(path)
-		workerComm.Stopped <- false
-		return
-	default:
-		log.Printf("Going to push %s", fullname)
-	}
+	w.checkAndContinue("pushing")
 
-	err = Push(formatPushURL(repo.AccessToken, repo.Username, fullname), subrepo)
+	err = Push(formatPushURL(repo.AccessToken, repo.Username, w.fullname), subrepo)
 	if err != nil {
 		log.Printf("Could not push: %s", err)
 		return
 	}
 
+	w.checkAndStop("finishing up")
+}
+
+func (w *worker) checkAndContinue(msg string) {
 	select {
-	case <-workerComm.Stop:
-		log.Println("Asked to stop: Stopping before cleaning up")
-		cleanUp(path)
-		workerComm.Stopped <- false
+	case <-w.stop:
+		log.Printf("stopping: %s %s", msg, w.fullname)
+		w.stopped <- false
 		return
 	default:
-		log.Printf("Going to cleanup %s", fullname)
+		log.Printf("continuing %s %s", msg, w.fullname)
 	}
+}
 
-	handlersMtx.Lock()
-	delete(handlers, fullname)
-	handlersMtx.Unlock()
-
-	workerComm.Stop <- true
+func (w *worker) checkAndStop(msg string) {
+	select {
+	case <-w.stop:
+		log.Printf("stopping: %s %s", msg, w.fullname)
+		w.stopped <- false
+		return
+	default:
+		handlersMtx.Lock()
+		delete(handlers, w.fullname)
+		handlersMtx.Unlock()
+		log.Printf("stopping (completed): %s %s", msg, w.fullname)
+		w.stopped <- true
+	}
 }
 
 func validate(r *http.Request) *github.WebHookPayload {
