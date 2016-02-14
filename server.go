@@ -24,11 +24,11 @@ var handlersMtx *sync.RWMutex
 
 // Repo is a github repo
 type Repo struct {
-	ID               string `bson:"_id,omitempty"`
-	Username         string
-	AccessToken      string
-	LastBuildOutput  string
-	LastBuildSuccess bool
+	ID              string `bson:"_id,omitempty"`
+	Username        string
+	AccessToken     string
+	LastBuildOutput string
+	LastBuildStatus string
 }
 
 // Comm is used to communicate to a worker goroutine
@@ -72,6 +72,13 @@ func main() {
 			workerComm := synchronize(fullname)
 			w := newWorker(fullname, url, workerComm)
 			w.work()
+			change := bson.M{
+				"$set": bson.M{
+					"lastbuildoutput": w.log,
+					"lastbuildstatus": w.status,
+				},
+			}
+			repos.UpdateId(fullname, change)
 		}()
 	})
 
@@ -128,6 +135,8 @@ type worker struct {
 	stopped  chan bool
 	fullname string
 	url      string
+	log      string
+	status   string
 }
 
 func newWorker(fullname, url string, workerComm *comm) *worker {
@@ -136,6 +145,8 @@ func newWorker(fullname, url string, workerComm *comm) *worker {
 		stopped:  workerComm.Stopped,
 		fullname: fullname,
 		url:      url,
+		log:      "",
+		status:   "incomplete",
 	}
 }
 
@@ -157,10 +168,19 @@ func (w *worker) work() {
 		return
 	}
 
-	HugoBuild(path)
+	w.checkAndContinue("building")
+	out, err := HugoBuild(path)
+	if err != nil {
+		cleanUp(path)
+		w.checkAndStop("could not build")
+		return
+	}
+	log.Printf(out)
+	w.checkAndContinue(out)
 
 	subrepo, err := Checkout(path + "/public/") // trailing / important
 	if err != nil {
+		cleanUp(path)
 		w.checkAndStop("Could not checkout: " + err.Error())
 		return
 	}
@@ -169,21 +189,24 @@ func (w *worker) work() {
 
 	err = Push(formatPushURL(repo.AccessToken, repo.Username, w.fullname), subrepo)
 	if err != nil {
+		cleanUp(path)
 		log.Printf("Could not push: %s", err)
 		return
 	}
-
+	cleanUp(path)
 	w.checkAndStop("finishing up")
+	w.status = "complete"
 }
 
 func (w *worker) checkAndContinue(msg string) {
 	select {
 	case <-w.stop:
 		log.Printf("stopping: %s %s", msg, w.fullname)
+		w.log = w.log + "stopping: " + msg + "\n"
 		w.stopped <- false
-		return
 	default:
 		log.Printf("continuing %s %s", msg, w.fullname)
+		w.log = w.log + "continuing: " + msg + "\n"
 	}
 }
 
@@ -191,13 +214,14 @@ func (w *worker) checkAndStop(msg string) {
 	select {
 	case <-w.stop:
 		log.Printf("stopping: %s %s", msg, w.fullname)
+		w.log = w.log + "stopping: " + msg + "\n"
 		w.stopped <- false
-		return
 	default:
 		handlersMtx.Lock()
 		delete(handlers, w.fullname)
 		handlersMtx.Unlock()
 		log.Printf("stopping (completed): %s %s", msg, w.fullname)
+		w.log = w.log + "stopping (completed): " + msg + "\n"
 		w.stopped <- true
 	}
 }

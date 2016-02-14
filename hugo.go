@@ -1,13 +1,23 @@
 package main
 
 import (
-	"os"
-
-	"github.com/spf13/hugo/commands"
+	"bytes"
+	"fmt"
+	"log"
+	"os/exec"
+	"strings"
 )
 
-// Build builds the site in the path
-func HugoBuild(path string) {
-	os.Args = append(os.Args, "-s", path)
-	commands.Execute()
+// HugoBuild builds the site in the path
+func HugoBuild(path string) (string, error) {
+	cmd := exec.Command("hugo", "-s", path)
+	cmd.Stdin = strings.NewReader("some input")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	fmt.Println(err)
+	if err != nil {
+		log.Println(out.String())
+	}
+	return out.String(), err
 }
