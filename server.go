@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -232,15 +236,37 @@ func validate(r *http.Request) *github.WebHookPayload {
 		return nil
 	}
 
-	decoder := json.NewDecoder(r.Body)
+	b, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return nil
+	}
+
 	var t github.WebHookPayload
-	err := decoder.Decode(&t)
+	err = json.Unmarshal(b, &t)
 	if err != nil {
 		return nil
 	}
 
 	if *t.Ref != specialRef {
 		log.Println("Not hugo pages:", *t.Ref)
+		return nil
+	}
+
+	mac := hmac.New(sha1.New, []byte("hugopagessecret"))
+	mac.Write(b)
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+
+	expectedMAC := mac.Sum(nil)
+	log.Println(r.Header)
+	signature := r.Header["X-Hub-Signature"][0]
+	log.Println(signature)
+	expected := "sha1=" + hex.EncodeToString(expectedMAC)
+	log.Println(expected)
+
+	if !hmac.Equal([]byte(signature), []byte(expected)) {
 		return nil
 	}
 
