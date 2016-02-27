@@ -5,10 +5,12 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/google/go-github/github"
@@ -23,7 +25,7 @@ var repos *mgo.Collection
 var specialBranch string
 var specialRef string
 
-var handlers map[string]*comm
+var handlers map[int]*comm
 var handlersMtx *sync.RWMutex
 
 // Repo is a github repo
@@ -59,7 +61,7 @@ func main() {
 	users = dbSession.DB("hugo-pages").C("users")
 	repos = dbSession.DB("hugo-pages").C("repos")
 
-	handlers = make(map[string]*comm)
+	handlers = make(map[int]*comm)
 	handlersMtx = &sync.RWMutex{}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -69,12 +71,13 @@ func main() {
 		}
 
 		fullname := *payload.Repo.FullName
+		id := *payload.Repo.ID
 		url := *payload.Repo.URL
 
 		go func() {
 			log.Printf("Got: %s", fullname)
-			workerComm := synchronize(fullname)
-			w := newWorker(fullname, url, workerComm)
+			workerComm := synchronize(id)
+			w := newWorker(id, url, workerComm)
 			w.work()
 			change := bson.M{
 				"$set": bson.M{
@@ -92,36 +95,35 @@ func main() {
 
 // synchronize is a step to see if another goroutine is handling a request
 // from the same repo
-func synchronize(fullname string) *comm {
-	// TODO: Make sure that the goroutine that overtakes is actually a new one
+func synchronize(id int) *comm {
 	handlersMtx.RLock()
-	currentComm := handlers[fullname]
+	currentComm := handlers[id]
 	handlersMtx.RUnlock()
 
 	if currentComm == nil {
 		// There is no goroutine handling a request for this repo
 		handlersMtx.Lock()
-		currentComm = handlers[fullname]
+		currentComm = handlers[id]
 		if currentComm == nil {
 			// Still there is no goroutine handling a request for this repo
 			currentComm = &comm{
 				Stop:    make(chan bool, 3), // Can buffer stop signals upto 3
 				Stopped: make(chan bool, 1),
 			}
-			handlers[fullname] = currentComm
+			handlers[id] = currentComm
 			handlersMtx.Unlock()
 		} else {
 			// Some goroutine has entered while we were creating a new channel
 			handlersMtx.Unlock()
-			_waitAndStart(currentComm, fullname)
+			_waitAndStart(currentComm, id)
 		}
 	} else {
-		_waitAndStart(currentComm, fullname)
+		_waitAndStart(currentComm, id)
 	}
 	return currentComm
 }
 
-func _waitAndStart(currentComm *comm, fullname string) {
+func _waitAndStart(currentComm *comm, id int) {
 	currentComm.Stop <- true
 	val := <-currentComm.Stopped
 	if val == true {
@@ -130,102 +132,116 @@ func _waitAndStart(currentComm *comm, fullname string) {
 		<-currentComm.Stop
 		currentComm.Stopped <- true
 		//and resynchronize
-		synchronize(fullname)
+		synchronize(id)
 	}
 }
 
 type worker struct {
-	stop     chan bool
-	stopped  chan bool
-	fullname string
-	url      string
-	log      string
-	status   string
+	stop    chan bool
+	stopped chan bool
+	id      int
+	url     string
+	path    string
+	log     string
+	status  string
 }
 
-func newWorker(fullname, url string, workerComm *comm) *worker {
+func newWorker(id int, url string, workerComm *comm) *worker {
 	return &worker{
-		stop:     workerComm.Stop,
-		stopped:  workerComm.Stopped,
-		fullname: fullname,
-		url:      url,
-		log:      "",
-		status:   "incomplete",
+		stop:    workerComm.Stop,
+		stopped: workerComm.Stopped,
+		id:      id,
+		path:    fmt.Sprintf("/tmp/%d", id),
+		url:     url,
+		log:     "",
+		status:  "incomplete",
 	}
 }
 
 func (w *worker) work() {
-	w.checkAndContinue("starting processing")
+	if !w.checkAndContinue("Starting build") {
+		return
+	}
 
-	repo := getRepo(w.fullname)
+	repo := getRepo(w.id)
 	if repo == nil {
-		w.checkAndStop("repo not known")
+		w.checkAndStop("Repo not known")
 		return
 	}
 
-	path := "/tmp/" + w.fullname
-	defer cleanUp(path)
-
-	_, err := Clone(w.url, path, specialBranch)
+	_, err := Clone(w.url, w.path, specialBranch)
 	if err != nil {
-		w.checkAndStop("could not clone")
+		w.checkAndStop("Could not clone")
 		return
 	}
 
-	w.checkAndContinue("building")
-	out, err := HugoBuild(path)
+	if !w.checkAndContinue("building") {
+		return
+	}
+
+	out, err := HugoBuild(w.path)
 	if err != nil {
-		cleanUp(path)
-		w.checkAndStop("could not build")
+		cleanUp(w.path)
+		w.checkAndStop("Could not build")
 		return
 	}
 	log.Printf(out)
-	w.checkAndContinue(out)
 
-	subrepo, err := Checkout(path + "/public/") // trailing / important
+	if !w.checkAndContinue(out) {
+		return
+	}
+
+	subrepo, err := Checkout(w.path + "/public/") // trailing / important
 	if err != nil {
-		cleanUp(path)
+		cleanUp(w.path)
 		w.checkAndStop("Could not checkout: " + err.Error())
 		return
 	}
 
-	w.checkAndContinue("pushing")
+	if !w.checkAndContinue("pushing") {
+		return
+	}
 
-	err = Push(formatPushURL(repo.AccessToken, repo.Username, w.fullname), subrepo)
+	err = Push(formatPushURL(repo.AccessToken, repo.Username, w.url), subrepo)
 	if err != nil {
-		cleanUp(path)
+		cleanUp(w.path)
 		log.Printf("Could not push: %s", err)
 		return
 	}
-	cleanUp(path)
-	w.checkAndStop("finishing up")
+	cleanUp(w.path)
+	w.checkAndStop("Finishing up")
 	w.status = "complete"
 }
 
-func (w *worker) checkAndContinue(msg string) {
+func (w *worker) checkAndContinue(msg string) bool {
 	select {
 	case <-w.stop:
-		log.Printf("stopping: %s %s", msg, w.fullname)
-		w.log = w.log + "stopping: " + msg + "\n"
+		log.Printf("Stopping: %s %s", msg, w.url)
+		w.log = w.log + "Stopping: " + msg + "\n"
+		cleanUp(w.path)
 		w.stopped <- false
+		return false
 	default:
-		log.Printf("continuing %s %s", msg, w.fullname)
-		w.log = w.log + "continuing: " + msg + "\n"
+		log.Printf("Continuing %s", msg)
+		w.log = w.log + msg + "\n"
+		return true
 	}
 }
 
 func (w *worker) checkAndStop(msg string) {
 	select {
 	case <-w.stop:
-		log.Printf("stopping: %s %s", msg, w.fullname)
-		w.log = w.log + "stopping: " + msg + "\n"
+		log.Printf("Stopping: %s %s", msg, w.url)
+		w.log = w.log + "Stopping: " + msg + "\n"
+		cleanUp(w.path)
 		w.stopped <- false
 	default:
 		handlersMtx.Lock()
-		delete(handlers, w.fullname)
+		delete(handlers, w.id)
 		handlersMtx.Unlock()
-		log.Printf("stopping (completed): %s %s", msg, w.fullname)
-		w.log = w.log + "stopping (completed): " + msg + "\n"
+		log.Printf("Stopping (completed): %s", msg)
+		w.log = w.log + "Stopping (completed): " + msg + "\n"
+		cleanUp(w.path)
 		w.stopped <- true
 	}
 }
@@ -247,6 +263,10 @@ func validate(r *http.Request) *github.WebHookPayload {
 		return nil
 	}
 
+	if t.Ref == nil {
+		return nil
+	}
+
 	if *t.Ref != specialRef {
 		log.Println("Not hugo pages:", *t.Ref)
 		return nil
@@ -260,27 +280,26 @@ func validate(r *http.Request) *github.WebHookPayload {
 	}
 
 	expectedMAC := mac.Sum(nil)
-	log.Println(r.Header)
 	signature := r.Header["X-Hub-Signature"][0]
-	log.Println(signature)
 	expected := "sha1=" + hex.EncodeToString(expectedMAC)
-	log.Println(expected)
 
 	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		log.Println("unknown origin")
 		return nil
 	}
 
 	return &t
 }
 
-func formatPushURL(accessToken, username, fullname string) string {
+func formatPushURL(accessToken, username, url string) string {
 	// TODO: optimize string concat
-	return "https://" + username + ":" + accessToken + "@github.com/" + fullname
+	parts := strings.Split(url, "://")
+	return parts[0] + "://" + username + ":" + accessToken + parts[1]
 }
 
-func getRepo(fullname string) *Repo {
+func getRepo(id int) *Repo {
 	result := &Repo{}
-	err := repos.Find(bson.M{"_id": fullname}).One(result)
+	err := repos.FindId(id).One(result)
 	if err != nil {
 		log.Println(err)
 		return nil
