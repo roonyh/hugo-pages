@@ -8,9 +8,9 @@ import (
 func TestFormatPushURL(t *testing.T) {
 	testAccessToken := "7777"
 	testUsername := "roonyh"
-	testFullname := "test/name"
+	testUrl := "https://github.com/test/name"
 
-	pushURL := formatPushURL(testAccessToken, testUsername, testFullname)
+	pushURL := formatPushURL(testAccessToken, testUsername, testUrl)
 	expectedURL := "https://roonyh:7777@github.com/test/name"
 
 	if pushURL != expectedURL {

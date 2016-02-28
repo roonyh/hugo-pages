@@ -85,7 +85,7 @@ func main() {
 					"lastbuildstatus": w.status,
 				},
 			}
-			repos.UpdateId(fullname, change)
+			repos.UpdateId(id, change)
 		}()
 	})
 
@@ -171,6 +171,7 @@ func (w *worker) work() {
 
 	_, err := Clone(w.url, w.path, specialBranch)
 	if err != nil {
+		log.Println(err.Error())
 		w.checkAndStop("Could not clone")
 		return
 	}
@@ -294,7 +295,7 @@ func validate(r *http.Request) *github.WebHookPayload {
 func formatPushURL(accessToken, username, url string) string {
 	// TODO: optimize string concat
 	parts := strings.Split(url, "://")
-	return parts[0] + "://" + username + ":" + accessToken + parts[1]
+	return parts[0] + "://" + username + ":" + accessToken + "@" + parts[1]
 }
 
 func getRepo(id int) *Repo {
