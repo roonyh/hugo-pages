@@ -65,7 +65,13 @@ func main() {
 	handlersMtx = &sync.RWMutex{}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		payload := validate(r)
+		payload, err := validate(r)
+		if len(err) < 1 {
+			log.Println(err)
+			http.Error(w, err, http.StatusBadRequest)
+			return
+		}
+
 		if payload == nil {
 			return
 		}
@@ -247,37 +253,34 @@ func (w *worker) checkAndStop(msg string) {
 	}
 }
 
-func validate(r *http.Request) *github.WebHookPayload {
+func validate(r *http.Request) (*github.WebHookPayload, string) {
 	if r.Method != "POST" {
-		log.Println("Not POST")
-		return nil
+		return nil, "Not POST"
 	}
 
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		return nil
+		return nil, "Can't read"
 	}
 
 	var t github.WebHookPayload
 	err = json.Unmarshal(b, &t)
 	if err != nil {
-		return nil
+		return nil, "Can't unmarshal"
 	}
 
 	if t.Ref == nil {
-		return nil
+		return nil, "No ref"
 	}
 
 	if *t.Ref != specialRef {
-		log.Println("Not hugo pages:", *t.Ref)
-		return nil
+		return nil, "Not hugo pages:" + *t.Ref
 	}
 
 	mac := hmac.New(sha1.New, []byte("hugopagessecret"))
 	mac.Write(b)
 	if err != nil {
-		log.Println(err)
-		return nil
+		return nil, err.Error()
 	}
 
 	expectedMAC := mac.Sum(nil)
@@ -285,11 +288,10 @@ func validate(r *http.Request) *github.WebHookPayload {
 	expected := "sha1=" + hex.EncodeToString(expectedMAC)
 
 	if !hmac.Equal([]byte(signature), []byte(expected)) {
-		log.Println("unknown origin")
-		return nil
+		return nil, "Unknown Origin"
 	}
 
-	return &t
+	return &t, ""
 }
 
 func formatPushURL(accessToken, username, url string) string {
