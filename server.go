@@ -66,7 +66,7 @@ func main() {
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		payload, err := validate(r)
-		if len(err) < 1 {
+		if len(err) > 0 {
 			log.Println(err)
 			http.Error(w, err, http.StatusBadRequest)
 			return
@@ -253,7 +253,7 @@ func (w *worker) checkAndStop(msg string) {
 	}
 }
 
-func validate(r *http.Request) (*github.WebHookPayload, string) {
+func validate(r *http.Request) (*github.PushEvent, string) {
 	if r.Method != "POST" {
 		return nil, "Not POST"
 	}
@@ -263,9 +263,10 @@ func validate(r *http.Request) (*github.WebHookPayload, string) {
 		return nil, "Can't read"
 	}
 
-	var t github.WebHookPayload
+	var t github.PushEvent
 	err = json.Unmarshal(b, &t)
 	if err != nil {
+		fmt.Println(err)
 		return nil, "Can't unmarshal"
 	}
 
