@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"os/exec"
 	"strings"
@@ -15,7 +14,7 @@ func HugoBuild(path string) (string, error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()
-	fmt.Println(err)
+	log.Println(err)
 	if err != nil {
 		log.Println(out.String())
 	}

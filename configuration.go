@@ -11,6 +11,7 @@ type Configuration struct {
 	Address       string
 	SpecialBranch string
 	MongoURL      string
+	SecretKey     string
 }
 
 func loadConfig() *Configuration {
@@ -22,7 +23,7 @@ func loadConfig() *Configuration {
 		fmt.Println("error:", err)
 		return nil
 	}
-
+	fmt.Println(configuration)
 	return configuration
 }
 

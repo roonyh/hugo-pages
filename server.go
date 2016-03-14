@@ -1,10 +1,13 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -28,11 +31,13 @@ var specialRef string
 var handlers map[int]*comm
 var handlersMtx *sync.RWMutex
 
+var secretKey []byte
+
 // Repo is a github repo
 type Repo struct {
 	ID              string `bson:"_id,omitempty"`
 	Username        string
-	AccessToken     string
+	EncAccessToken  []byte
 	LastBuildOutput string
 	LastBuildStatus string
 }
@@ -49,10 +54,15 @@ func main() {
 	config := loadConfig()
 	config.print()
 
+	var err error
+	fmt.Println(config.SecretKey)
+	secretKey, err = hex.DecodeString(config.SecretKey)
+	fmt.Println(secretKey)
+
 	specialBranch = config.SpecialBranch
 	specialRef = "refs/heads/" + config.SpecialBranch
 
-	dbSession, err := mgo.Dial(config.MongoURL)
+	dbSession, err = mgo.Dial(config.MongoURL)
 	if err != nil {
 		panic(err)
 	}
@@ -198,7 +208,9 @@ func (w *worker) work() {
 		return
 	}
 
-	subrepo, err := Checkout(w.path + "/public/") // trailing / important
+	pushBranch := getPushBranch(w.url)
+	log.Println("will push to:", pushBranch)
+	subrepo, err := Checkout(w.path+"/public/", pushBranch) // trailing / important
 	if err != nil {
 		cleanUp(w.path)
 		w.checkAndStop("Could not checkout: " + err.Error())
@@ -209,9 +221,18 @@ func (w *worker) work() {
 		return
 	}
 
-	err = Push(formatPushURL(repo.AccessToken, repo.Username, w.url), subrepo)
+	tokenString, err := decrypt(repo.EncAccessToken)
 	if err != nil {
 		cleanUp(w.path)
+		w.checkAndStop("Could not push")
+		log.Println(err.Error())
+		return
+	}
+
+	err = Push(formatPushURL(string(tokenString), repo.Username, w.url), pushBranch, subrepo)
+	if err != nil {
+		cleanUp(w.path)
+		w.checkAndStop("Could not push: " + err.Error())
 		log.Printf("Could not push: %s", err)
 		return
 	}
@@ -289,6 +310,7 @@ func validate(r *http.Request) (*github.PushEvent, string) {
 	expected := "sha1=" + hex.EncodeToString(expectedMAC)
 
 	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		fmt.Println(expected)
 		return nil, "Unknown Origin"
 	}
 
@@ -299,6 +321,17 @@ func formatPushURL(accessToken, username, url string) string {
 	// TODO: optimize string concat
 	parts := strings.Split(url, "://")
 	return parts[0] + "://" + username + ":" + accessToken + "@" + parts[1]
+}
+
+func getPushBranch(url string) string {
+	parts := strings.Split(url, "://")
+	parts = strings.Split(parts[1], "/")
+	if parts[2] == parts[1]+".github.io" {
+		return "master"
+	}
+	fmt.Println(parts)
+
+	return "gh-pages"
 }
 
 func getRepo(id int) *Repo {
@@ -317,4 +350,47 @@ func cleanUp(path string) {
 	if err != nil {
 		log.Println(err)
 	}
+}
+
+func encrypt(text []byte) (ciphertext []byte, err error) {
+
+	var block cipher.Block
+
+	if block, err = aes.NewCipher(secretKey); err != nil {
+		return nil, err
+	}
+
+	ivSource := []byte("abcdef1234567890")
+	iv := ivSource[:aes.BlockSize] // const BlockSize = 16
+
+	cfb := cipher.NewCFBEncrypter(block, iv)
+
+	ciphertext = make([]byte, len(text))
+	cfb.XORKeyStream(ciphertext, text)
+
+	return
+}
+
+func decrypt(ciphertext []byte) (plaintext []byte, err error) {
+	fmt.Println(secretKey)
+
+	var block cipher.Block
+
+	if block, err = aes.NewCipher(secretKey); err != nil {
+		return
+	}
+
+	if len(ciphertext) < aes.BlockSize {
+		err = errors.New("ciphertext too short")
+		return
+	}
+
+	iv := []byte("abcdef1234567890")
+
+	cfb := cipher.NewCFBDecrypter(block, iv)
+	cfb.XORKeyStream(ciphertext, ciphertext)
+
+	plaintext = ciphertext
+
+	return
 }

@@ -41,7 +41,7 @@ func Clone(url string, path string, branch string) (*git.Repository, error) {
 
 // Checkout creates a new repository in the generated `public` folder and
 // creates a new commit with the generated stuff
-func Checkout(pathToPublic string) (*git.Repository, error) {
+func Checkout(pathToPublic, branch string) (*git.Repository, error) {
 	repo, err := git.InitRepository(pathToPublic, false)
 	if err != nil {
 		return nil, err
@@ -97,7 +97,7 @@ func Checkout(pathToPublic string) (*git.Repository, error) {
 	}
 
 	message := "Publish to gh-pages"
-	_, err = repo.CreateCommit("refs/heads/gh-pages", signature, signature, message, tree)
+	_, err = repo.CreateCommit("refs/heads/"+branch, signature, signature, message, tree)
 	if err != nil {
 		return nil, err
 	}
@@ -106,18 +106,13 @@ func Checkout(pathToPublic string) (*git.Repository, error) {
 }
 
 // Push pushes the `gh-pages` branch to the given url
-func Push(url string, repo *git.Repository) error {
+func Push(url, branch string, repo *git.Repository) error {
 	remote, err := repo.Remotes.Create("by-hgpages-service", url)
 	if err != nil {
 		return err
 	}
 
-	err = remote.Push([]string{":refs/heads/gh-pages"}, nil)
-	if err != nil {
-		return err
-	}
-
-	err = remote.Push([]string{"refs/heads/gh-pages"}, nil)
+	err = remote.Push([]string{"+refs/heads/" + branch}, nil)
 	if err != nil {
 		return err
 	}
